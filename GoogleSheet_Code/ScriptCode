@@ -1,0 +1,17 @@
+// Google Apps Script
+function doGet(e) {
+  // Spreadsheet ID and sheet name
+  var spreadsheet = SpreadsheetApp.openById("1EdQWMNx6Xfpvrz0s8kTT0uRiM60swPlowH_PQD7B4pY");
+  var sheet = spreadsheet.getSheetByName("DataCollector");
+
+  // Append data to the sheet (e.g., timestamp, Amps RMS, Wattage)
+  var amps = e.parameter.amps;
+  var wattage = e.parameter.wattage;
+  var timeStamp = new Date();
+  
+  // Add values to the row
+  sheet.appendRow([timeStamp, amps, wattage]);
+
+  // Respond to the GET request with a success message
+  return ContentService.createTextOutput("Data successfully logged.");
+}
