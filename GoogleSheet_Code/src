@@ -1,0 +1,176 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <HTTPClient.h> // Include HTTP client library for Google Sheets
+
+// Replace with your network credentials
+const char* ssid = "K25";
+const char* password = "kishore25";
+
+// Google Script URL (Replace with your actual script URL)
+const char* googleScriptURL = "https://script.google.com/macros/s/AKfycbwcZ0NGMrlCCeAuH_EJJVLKYc3o1fyUS-Llpq3JrNHTeqB0dKoUL30PlUYF7PbEFfAHbQ/exec";
+
+// Define the pins for the LEDs
+const int ledPins[] = {12, 13, 14};
+
+// Define the pin for the current sensor input
+const int sensorIn = 34;
+int mVperAmp = 300;
+
+// Variables to hold the sensor readings
+double Voltage = 0;
+double VRMS = 0;
+double AmpsRMS = 0;
+
+WebServer server(80);
+
+// HTML content
+const char MAIN_page[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ESP32 LED and Power Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; }
+    .button { display: inline-block; padding: 10px 20px; font-size: 20px; margin: 20px; cursor: pointer; background-color: #4CAF50; color: white; }
+    .power-display { margin-top: 20px; font-size: 18px; }
+  </style>
+</head>
+<body>
+  <h1>ESP32 LED and Power Control</h1>
+  <button class="button" onclick="toggleLED(0)">Toggle LED 1</button>
+  <button class="button" onclick="toggleLED(1)">Toggle LED 2</button>
+  <button class="button" onclick="toggleLED(2)">Toggle LED 3</button>
+  <div class="power-display">
+    <h2>Current Power Reading:</h2>
+    <p id="powerReading">Loading...</p>
+  </div>
+  <script>
+    function toggleLED(led) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", "/toggle?led=" + led, true);
+      xhr.send();
+    }
+
+    function updatePowerReading() {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", "/power", true);
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState == 4 && xhr.status == 200) {
+          document.getElementById("powerReading").innerHTML = xhr.responseText;
+        }
+      };
+      xhr.send();
+    }
+
+    setInterval(updatePowerReading, 1000);  // Update every second
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// Variables to hold the LED states
+bool ledStates[] = {LOW, LOW, LOW};
+
+// Setup Wi-Fi connection
+void setup() {
+  Serial.begin(115200);
+  
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+  Serial.println("Connected to WiFi");
+
+  server.on("/", handleRoot);
+  server.on("/toggle", handleLEDToggle);
+  server.on("/power", handlePowerReading);
+  server.begin();
+
+  for (int i = 0; i < 3; i++) {
+    pinMode(ledPins[i], OUTPUT);
+    digitalWrite(ledPins[i], ledStates[i]);
+  }
+}
+
+void loop() {
+  server.handleClient();
+}
+
+void handleRoot() {
+  server.send(200, "text/html", MAIN_page);
+}
+
+void handleLEDToggle() {
+  if (server.hasArg("led")) {
+    int led = server.arg("led").toInt();
+    if (led >= 0 && led < 3) {
+      toggleLEDState(led);
+    }
+  }
+  server.send(200, "text/plain", "LED toggled");
+}
+
+void handlePowerReading() {
+  Voltage = getVPP();  // Get the peak-to-peak voltage from the sensor
+  VRMS = (Voltage / 2.0) * 0.707;  // Calculate RMS voltage
+  AmpsRMS = (VRMS * 1000) / mVperAmp;  // Calculate RMS current
+  float Wattage = (220 * AmpsRMS) - 18;  // Calculate wattage and adjust with observed offset
+
+  // Send data to Google Sheets
+  sendDataToGoogleSheets(AmpsRMS, Wattage);
+
+  String powerInfo = String(AmpsRMS) + " Amps RMS, " + String(Wattage) + " Watt";
+  server.send(200, "text/plain", powerInfo);
+}
+
+void toggleLEDState(int ledIndex) {
+  ledStates[ledIndex] = !ledStates[ledIndex];
+  digitalWrite(ledPins[ledIndex], ledStates[ledIndex]);
+}
+
+float getVPP() {
+  float result;
+  int readValue;           
+  int maxValue = 0;        
+  int minValue = 4095;     
+
+  uint32_t start_time = millis();
+  while ((millis() - start_time) < 1000) {  
+    readValue = analogRead(sensorIn);  
+    
+    if (readValue > maxValue) {
+      maxValue = readValue;  
+    }
+    if (readValue < minValue) {
+      minValue = readValue;  
+    }
+  }
+
+  result = ((maxValue - minValue) * 3.3) / 4095.0;  
+  return result;
+}
+
+void sendDataToGoogleSheets(double amps, double wattage) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = googleScriptURL;
+    url += "?amps=" + String(amps);
+    url += "&wattage=" + String(wattage);
+    
+    http.begin(url);
+    int httpResponseCode = http.GET();
+    
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.println("Response from server: " + response);
+    } else {
+      Serial.println("Error on sending GET request: " + String(httpResponseCode));
+    }
+    
+    http.end();
+  } else {
+    Serial.println("WiFi Disconnected");
+  }
+}
